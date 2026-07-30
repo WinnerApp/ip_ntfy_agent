@@ -1,0 +1,19 @@
+name: ip_ntfy_agent
+description: Sync local IP / Jenkins status to Appwrite and proxy HTTP via ntfy.
+version: 1.0.0
+
+environment:
+  sdk: ^3.11.5
+
+executables:
+  ip_ntfy_agent:
+
+dependencies:
+  dart_appwrite: ^26.1.0
+  dotenv: ^4.2.0
+  http: ^1.6.0
+  path: ^1.9.0
+
+dev_dependencies:
+  lints: ^6.1.0
+  test: ^1.25.6
