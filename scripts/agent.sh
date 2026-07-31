@@ -17,16 +17,30 @@ LOG_FILE="$RUN_DIR/agent.log"
 
 mkdir -p "$RUN_DIR"
 
+# PIDs of agent processes (global binary or dart entrypoint), excluding this script.
+find_agent_pids() {
+  local self=$$
+  local pid cmd
+
+  {
+    [[ -f "$PID_FILE" ]] && cat "$PID_FILE" 2>/dev/null || true
+    pgrep -f 'ip_ntfy_agent' 2>/dev/null || true
+  } | sort -u | while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [[ "$pid" == "$self" ]] && continue
+    kill -0 "$pid" 2>/dev/null || continue
+    cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+    [[ -z "$cmd" ]] && continue
+    # Don't kill the management script itself (path may contain ip_ntfy_agent/)
+    [[ "$cmd" == *scripts/agent.sh* ]] && continue
+    echo "$pid"
+  done
+}
+
 is_running() {
-  if [[ ! -f "$PID_FILE" ]]; then
-    return 1
-  fi
-  local pid
-  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [[ -z "${pid:-}" ]]; then
-    return 1
-  fi
-  kill -0 "$pid" 2>/dev/null
+  local pids
+  pids="$(find_agent_pids | tr '\n' ' ')"
+  [[ -n "${pids// /}" ]]
 }
 
 resolve_cmd() {
@@ -55,7 +69,11 @@ cmd_start() {
   local env_path="${1:-}"
 
   if is_running; then
-    echo "already running (pid $(cat "$PID_FILE"))"
+    echo "already running:"
+    find_agent_pids | while read -r pid; do
+      echo "  pid $pid  $(ps -p "$pid" -o args= 2>/dev/null || true)"
+    done
+    echo "stop first: $0 stop"
     exit 0
   fi
 
@@ -93,26 +111,36 @@ cmd_start() {
 }
 
 cmd_stop() {
-  if ! is_running; then
+  local -a pids=()
+  while read -r pid; do
+    [[ -n "$pid" ]] && pids+=("$pid")
+  done < <(find_agent_pids)
+
+  if ((${#pids[@]} == 0)); then
     echo "not running"
     rm -f "$PID_FILE"
     exit 0
   fi
 
-  local pid
-  pid="$(cat "$PID_FILE")"
-  echo "stopping pid=$pid ..."
-  kill "$pid" 2>/dev/null || true
+  echo "stopping ${#pids[@]} process(es): ${pids[*]}"
+  for pid in "${pids[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
 
   local i=0
-  while kill -0 "$pid" 2>/dev/null && (( i < 20 )); do
+  local left
+  while (( i < 20 )); do
+    left="$(find_agent_pids | tr '\n' ' ')"
+    [[ -z "${left// /}" ]] && break
     sleep 0.25
     i=$((i + 1))
   done
 
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "force kill pid=$pid"
-    kill -9 "$pid" 2>/dev/null || true
+  left="$(find_agent_pids | tr '\n' ' ')"
+  if [[ -n "${left// /}" ]]; then
+    echo "force kill: $left"
+    # shellcheck disable=SC2086
+    kill -9 $left 2>/dev/null || true
   fi
 
   rm -f "$PID_FILE"
@@ -120,13 +148,22 @@ cmd_stop() {
 }
 
 cmd_status() {
-  if is_running; then
-    echo "running (pid $(cat "$PID_FILE"))"
-    echo "log: $LOG_FILE"
-    exit 0
+  local -a pids=()
+  while read -r pid; do
+    [[ -n "$pid" ]] && pids+=("$pid")
+  done < <(find_agent_pids)
+
+  if ((${#pids[@]} == 0)); then
+    echo "not running"
+    exit 1
   fi
-  echo "not running"
-  exit 1
+
+  echo "running (${#pids[@]}):"
+  for pid in "${pids[@]}"; do
+    echo "  pid $pid  $(ps -p "$pid" -o args= 2>/dev/null || true)"
+  done
+  echo "log: $LOG_FILE"
+  exit 0
 }
 
 cmd_logs() {
@@ -152,7 +189,7 @@ Usage: $0 <command> [args]
 
 Commands:
   start [env]   Start agent in background (survives SSH disconnect)
-  stop          Stop background agent
+  stop          Stop all ip_ntfy_agent processes
   restart [env] Restart agent
   status        Show running status
   logs [-f]     Show last 100 log lines (-f to follow)

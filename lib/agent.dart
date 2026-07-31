@@ -31,6 +31,8 @@ class Agent {
   String? _currentIp;
   bool _running = false;
   final Completer<void> _done = Completer<void>();
+  /// 进行中的 uploadZip requestId，避免同进程重复处理。
+  final _inflightUploadIds = <String>{};
 
   Future<void> start() async {
     if (_running) return;
@@ -262,6 +264,28 @@ class Agent {
     Map<String, dynamic> payload,
   ) async {
     final requestId = payload['requestId'] ?? payload['id'];
+    final requestKey = requestId?.toString() ?? '';
+    if (requestKey.isNotEmpty && !_inflightUploadIds.add(requestKey)) {
+      stdout.writeln(
+        '[agent] skip duplicate uploadZip requestId=$requestKey',
+      );
+      return;
+    }
+
+    try {
+      await _doUploadZip(topic, payload, requestId);
+    } finally {
+      if (requestKey.isNotEmpty) {
+        _inflightUploadIds.remove(requestKey);
+      }
+    }
+  }
+
+  Future<void> _doUploadZip(
+    String topic,
+    Map<String, dynamic> payload,
+    Object? requestId,
+  ) async {
     final buildId = payload['buildId']?.toString() ??
         payload['buildNumber']?.toString();
     final platform = payload['platform']?.toString();
