@@ -781,9 +781,6 @@ class Agent {
     return (localPath: destPath, tempDir: tempDir);
   }
 
-  /// ntfy 默认 message-size 约 4KB；超出则按附件处理，自建未开附件会 40014。
-  static const _ntfyMessageBudget = 3500;
-
   Map<String, dynamic> _buildProxyResponse({
     required Object? requestId,
     required String method,
@@ -825,40 +822,32 @@ class Agent {
       };
     }
 
-    Map<String, dynamic> full() => {
-          'type': 'response',
-          'requestId': requestId,
-          'ok': true,
-          'statusCode': response.statusCode,
-          'headers': response.headers,
-          'body': _safeBody(response),
-          'request': requestMeta,
-        };
-
-    Map<String, dynamic> metaOnly({required String reason}) => {
-          'type': 'response',
-          'requestId': requestId,
-          'ok': true,
-          'statusCode': response.statusCode,
-          'body': null,
-          'bodyOmitted': true,
-          'omitReason': reason,
-          'fileName': names.fileName,
-          'folderName': names.folderName,
-          'contentType': ?contentType,
-          'contentLength': contentLength,
-          'request': requestMeta,
-        };
-
     if (_looksLikeFileResponse(response)) {
-      return metaOnly(reason: 'file');
+      return {
+        'type': 'response',
+        'requestId': requestId,
+        'ok': true,
+        'statusCode': response.statusCode,
+        'body': null,
+        'bodyOmitted': true,
+        'omitReason': 'file',
+        'fileName': names.fileName,
+        'folderName': names.folderName,
+        'contentType': ?contentType,
+        'contentLength': contentLength,
+        'request': requestMeta,
+      };
     }
 
-    final candidate = full();
-    if (utf8.encode(jsonEncode(candidate)).length <= _ntfyMessageBudget) {
-      return candidate;
-    }
-    return metaOnly(reason: 'too_large');
+    return {
+      'type': 'response',
+      'requestId': requestId,
+      'ok': true,
+      'statusCode': response.statusCode,
+      'headers': response.headers,
+      'body': _safeBody(response),
+      'request': requestMeta,
+    };
   }
 
   /// Jenkins `/job/.../ws/...` 目录页（HTML）过大，改走 `*plain*` 文本列表。

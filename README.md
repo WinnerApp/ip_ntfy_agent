@@ -152,7 +152,7 @@ Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `
 }
 ```
 
-代理到**文件**（二进制/`Content-Disposition: attachment` 等）或响应过大（超过 ntfy 文本消息上限）时，**不回传 body**，只返回文件名 / 文件夹名等元数据，避免触发 ntfy `attachments not allowed`。实际下载请走 `uploadApk` / `uploadZip` 等其它通道：
+代理到**文件**（二进制/`Content-Disposition: attachment` 等）时，**不回传 body**，只返回文件名 / 文件夹名等元数据，避免触发 ntfy `attachments not allowed`。实际下载请走 `uploadApk` / `uploadZip` 等其它通道：
 
 ```json
 {
