@@ -200,6 +200,18 @@ class Agent {
     }
 
     final clientUri = requestUri;
+    final preferredBase = appwrite.cached?.url ??
+        (_currentIp != null ? urlFromIp(_currentIp!) : null);
+    final resolvedUri =
+        JenkinsService.rewriteLoopbackHost(requestUri, preferredBase);
+    if (resolvedUri.host != requestUri.host ||
+        resolvedUri.port != requestUri.port) {
+      stdout.writeln(
+        '[agent] rewrite $requestUri -> $resolvedUri',
+      );
+    }
+    requestUri = resolvedUri;
+
     final useJenkinsPlain =
         method == 'GET' && _isJenkinsWorkspaceDir(requestUri);
     if (useJenkinsPlain) {
@@ -755,17 +767,21 @@ class Agent {
       return (localPath: local.path, tempDir: null);
     }
 
+    final preferredBase = doc.url ??
+        (_currentIp != null ? urlFromIp(_currentIp!) : null);
+    final downloadUri =
+        JenkinsService.rewriteLoopbackHost(uri, preferredBase);
     final name = (fileName != null && fileName.trim().isNotEmpty)
         ? fileName.trim()
-        : (uri.pathSegments.isNotEmpty &&
-                uri.pathSegments.last.contains('.')
-            ? uri.pathSegments.last
+        : (downloadUri.pathSegments.isNotEmpty &&
+                downloadUri.pathSegments.last.contains('.')
+            ? downloadUri.pathSegments.last
             : defaultName);
     final tempDir = await Directory.systemTemp.createTemp(tempPrefix);
     final destPath = '${tempDir.path}/$name';
     await jenkins.downloadUrl(
       doc: doc,
-      url: trimmed,
+      url: downloadUri.toString(),
       destPath: destPath,
       emptyErrorLabel: emptyErrorLabel,
     );

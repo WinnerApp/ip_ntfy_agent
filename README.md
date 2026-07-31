@@ -123,7 +123,7 @@ nohup dart run >> agent.log 2>&1 &
 {
   "requestId": "optional-id",
   "method": "GET",
-  "url": "http://127.0.0.1:8080/api/json",
+  "url": "http://10.10.37.131:8080/api/json",
   "headers": {
     "Authorization": "Basic xxx"
   },
@@ -136,6 +136,8 @@ nohup dart run >> agent.log 2>&1 &
 
 Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `"type":"progress"` 的消息，避免回环。
 
+选机方式：向目标打包机 IP 对应 topic 发消息（如 `10.10.37.131` → `topic_10_10_37_131`）。`url` 建议写该机局域网地址并带 Jenkins 端口（`http://10.10.37.131:8080/...`）。若 Appwrite 文档或请求省略端口、或仍写 `127.0.0.1` / `localhost`，Agent 会自动补 `:8080` 并改写为本机文档 host，避免打到 80 或反代 502。
+
 响应示例：
 
 ```json
@@ -147,7 +149,7 @@ Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `
   "body": {},
   "request": {
     "method": "GET",
-    "url": "http://127.0.0.1:8080/api/json?tree=jobs%5Bname%5D"
+    "url": "http://10.10.37.131:8080/api/json?tree=jobs%5Bname%5D"
   }
 }
 ```
@@ -169,7 +171,7 @@ Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `
   "contentLength": 12345678,
   "request": {
     "method": "GET",
-    "url": "http://127.0.0.1:8080/job/.../ws/Builds/app.apk"
+    "url": "http://10.10.37.131:8080/job/.../ws/Builds/app.apk"
   }
 }
 ```
@@ -189,7 +191,7 @@ Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `
   },
   "request": {
     "method": "GET",
-    "url": "http://127.0.0.1:8080/job/build_unity_cache/ws/"
+    "url": "http://10.10.37.131:8080/job/build_unity_cache/ws/"
   }
 }
 ```
@@ -306,7 +308,7 @@ Agent 按与旧发布工具相同的路径，从本机 Jenkins workspace 拉取 
 {
   "action": "uploadApk",
   "requestId": "apk-123",
-  "path": "http://127.0.0.1:8080/job/build_unity_first_package/ws/Builds/app.apk",
+  "path": "http://10.10.37.131:8080/job/build_unity_first_package/ws/Builds/app.apk",
   "buildId": "123",
   "tag": "test"
 }

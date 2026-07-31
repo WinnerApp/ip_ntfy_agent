@@ -33,12 +33,32 @@ class JenkinsService {
     return uri.replace(port: 8080).toString().replaceAll(RegExp(r'/+$'), '');
   }
 
-  /// Agent 与 Jenkins 同机：下载 zip 一律走本机 127.0.0.1，端口取自文档 url（缺省 8080）。
-  /// 避免用文档里的公网/局域网 IP 且漏端口时打到 80（Apache 404）。
+  /// Agent 与 Jenkins 同机：用文档里的局域网 IP + 端口（缺省补 8080）。
+  /// 不用 127.0.0.1：部分反代只按机器 IP 的 VirtualHost 转发，localhost 会 502。
   static String localJenkinsBase(String? jenkinsUrl) {
-    final uri = Uri.tryParse((jenkinsUrl ?? '').trim());
-    final port = (uri != null && uri.hasPort) ? uri.port : 8080;
-    return 'http://127.0.0.1:$port';
+    return normalizeJenkinsBase(jenkinsUrl ?? '');
+  }
+
+  /// 请求 URL 无端口时补 Jenkins 默认 8080（Appwrite 文档 url 常不带端口）。
+  static Uri ensureJenkinsPort(Uri uri) {
+    if (uri.hasPort) return uri;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return uri;
+    if (uri.host.isEmpty) return uri;
+    return uri.replace(port: 8080);
+  }
+
+  /// 客户端常写 `http://127.0.0.1:8080/...`；改写为 [preferredBaseUrl] 的 host/port。
+  /// [preferredBaseUrl] 缺端口时按 [normalizeJenkinsBase] 补 8080。
+  static Uri rewriteLoopbackHost(Uri uri, String? preferredBaseUrl) {
+    final host = uri.host.toLowerCase();
+    if (host != '127.0.0.1' && host != 'localhost' && host != '::1') {
+      return ensureJenkinsPort(uri);
+    }
+    final base = Uri.tryParse(normalizeJenkinsBase(preferredBaseUrl ?? ''));
+    if (base == null || base.host.isEmpty) {
+      return ensureJenkinsPort(uri);
+    }
+    return uri.replace(host: base.host, port: base.hasPort ? base.port : 8080);
   }
 
   /// Jenkins workspace zip URL for a hot-update build.
@@ -89,7 +109,7 @@ class JenkinsService {
     required String platform,
     required String destPath,
   }) async {
-    // 本机下载：用 127.0.0.1 + 文档端口，不依赖 Appwrite url 是否带 :8080。
+    // 本机下载：用文档局域网 URL（补默认端口），避免 127.0.0.1 反代 502。
     final zipUrl = hotUpdateZipUrl(
       jenkinsUrl: localJenkinsBase(doc.url),
       buildNumber: buildNumber,

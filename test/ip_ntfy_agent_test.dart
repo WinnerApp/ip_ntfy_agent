@@ -56,18 +56,18 @@ void main() {
     );
   });
 
-  test('localJenkinsBase uses 127.0.0.1 and doc port (default 8080)', () {
+  test('localJenkinsBase keeps LAN IP and default port 8080', () {
     expect(
       JenkinsService.localJenkinsBase('http://10.10.48.63'),
-      'http://127.0.0.1:8080',
+      'http://10.10.48.63:8080',
     );
     expect(
       JenkinsService.localJenkinsBase('http://10.10.48.63:8080/'),
-      'http://127.0.0.1:8080',
+      'http://10.10.48.63:8080',
     );
     expect(
       JenkinsService.localJenkinsBase('http://10.10.48.63:9090'),
-      'http://127.0.0.1:9090',
+      'http://10.10.48.63:9090',
     );
     expect(
       JenkinsService.hotUpdateZipUrl(
@@ -75,8 +75,48 @@ void main() {
         buildNumber: '3047',
         platform: 'iOS',
       ),
-      'http://127.0.0.1:8080/job/build_unity_hot_asset/ws/HotUpdate/3047/IOS'
+      'http://10.10.48.63:8080/job/build_unity_hot_asset/ws/HotUpdate/3047/IOS'
           '/UploadAssets/*zip*/UploadAssets.zip',
+    );
+  });
+
+  test('rewriteLoopbackHost maps localhost to preferred LAN IP with port', () {
+    final uri = Uri.parse(
+      'http://127.0.0.1:8080/job/build_winner_app_binary_2.0/api/json',
+    );
+    expect(
+      JenkinsService.rewriteLoopbackHost(uri, 'http://10.10.37.131')
+          .toString(),
+      'http://10.10.37.131:8080/job/build_winner_app_binary_2.0/api/json',
+    );
+    expect(
+      JenkinsService.rewriteLoopbackHost(uri, 'http://10.10.37.131:9090')
+          .toString(),
+      'http://10.10.37.131:9090/job/build_winner_app_binary_2.0/api/json',
+    );
+    expect(
+      JenkinsService.rewriteLoopbackHost(uri, null),
+      uri,
+    );
+    final lan = Uri.parse('http://10.10.37.131:8080/api/json');
+    expect(
+      JenkinsService.rewriteLoopbackHost(lan, 'http://10.10.99.1'),
+      lan,
+    );
+  });
+
+  test('rewriteLoopbackHost adds 8080 when Appwrite url has no port', () {
+    final noPort = Uri.parse(
+      'http://10.10.37.131/job/build_winner_app_binary_2.0/api/json',
+    );
+    expect(
+      JenkinsService.rewriteLoopbackHost(noPort, 'http://10.10.37.131')
+          .toString(),
+      'http://10.10.37.131:8080/job/build_winner_app_binary_2.0/api/json',
+    );
+    expect(
+      JenkinsService.ensureJenkinsPort(noPort).toString(),
+      'http://10.10.37.131:8080/job/build_winner_app_binary_2.0/api/json',
     );
   });
 
