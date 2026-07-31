@@ -95,9 +95,24 @@ class JenkinsService {
       buildNumber: buildNumber,
       platform: platform,
     );
+    return downloadUrl(
+      doc: doc,
+      url: zipUrl,
+      destPath: destPath,
+      emptyErrorLabel: 'zip',
+    );
+  }
+
+  /// Download arbitrary [url] (e.g. Jenkins workspace path) into [destPath].
+  /// Uses host-document Basic auth when present.
+  Future<File> downloadUrl({
+    required HostDocument doc,
+    required String url,
+    required String destPath,
+    String emptyErrorLabel = 'file',
+  }) async {
     stdout.writeln(
-      '[jenkins] download hot-update zip: $zipUrl '
-      '(doc.url=${doc.url})',
+      '[jenkins] download $emptyErrorLabel: $url (doc.url=${doc.url})',
     );
 
     final dest = File(destPath);
@@ -106,7 +121,7 @@ class JenkinsService {
       await dest.delete();
     }
 
-    final request = http.Request('GET', Uri.parse(zipUrl));
+    final request = http.Request('GET', Uri.parse(url));
     request.headers.addAll(_authHeaders(doc));
     final streamed = await _client.send(request).timeout(
           const Duration(minutes: 30),
@@ -114,7 +129,7 @@ class JenkinsService {
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
       final body = await streamed.stream.bytesToString();
       throw StateError(
-        'Jenkins download failed HTTP ${streamed.statusCode} url=$zipUrl '
+        'Download failed HTTP ${streamed.statusCode} url=$url '
         'body=${body.length > 500 ? '${body.substring(0, 500)}...' : body}',
       );
     }
@@ -127,7 +142,7 @@ class JenkinsService {
     }
 
     if (!await dest.exists() || await dest.length() == 0) {
-      throw StateError('Downloaded zip is empty: $destPath');
+      throw StateError('Downloaded $emptyErrorLabel is empty: $destPath');
     }
     stdout.writeln(
       '[jenkins] saved ${p.basename(destPath)} '

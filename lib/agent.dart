@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
 
 import 'appwrite_service.dart';
 import 'config.dart';
@@ -171,6 +172,14 @@ class Agent {
     }
     if (action == 'deleteZip') {
       await _handleDeleteZip(topic, payload);
+      return;
+    }
+    if (action == 'uploadApk') {
+      await _handleUploadApk(topic, payload);
+      return;
+    }
+    if (action == 'deleteApk') {
+      await _handleDeleteApk(topic, payload);
       return;
     }
 
@@ -487,6 +496,283 @@ class Agent {
         tags: const ['response', 'agent-response'],
       );
     }
+  }
+
+  Future<void> _handleUploadApk(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final requestKey = requestId?.toString() ?? '';
+    if (requestKey.isNotEmpty && !_inflightUploadIds.add(requestKey)) {
+      stdout.writeln(
+        '[agent] skip duplicate uploadApk requestId=$requestKey',
+      );
+      return;
+    }
+
+    try {
+      await _doUploadApk(topic, payload, requestId);
+    } finally {
+      if (requestKey.isNotEmpty) {
+        _inflightUploadIds.remove(requestKey);
+      }
+    }
+  }
+
+  Future<void> _doUploadApk(
+    String topic,
+    Map<String, dynamic> payload,
+    Object? requestId,
+  ) async {
+    final path = payload['path']?.toString() ??
+        payload['file']?.toString() ??
+        payload['filePath']?.toString();
+    final buildId = payload['buildId']?.toString() ??
+        payload['buildNumber']?.toString();
+    final tag = payload['tag']?.toString();
+    final fileName = payload['fileName']?.toString() ??
+        payload['filename']?.toString();
+
+    if (path == null ||
+        path.isEmpty ||
+        buildId == null ||
+        buildId.isEmpty) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'uploadApk',
+          'requestId': requestId,
+          'ok': false,
+          'error': 'uploadApk requires path and buildId',
+        },
+        tags: const ['response', 'agent-response'],
+      );
+      return;
+    }
+
+    final doc = appwrite.cached;
+    if (doc == null) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'uploadApk',
+          'requestId': requestId,
+          'ok': false,
+          'error': 'No Jenkins host document loaded',
+        },
+        tags: const ['response', 'agent-response'],
+      );
+      return;
+    }
+
+    stdout.writeln(
+      '[agent] uploadApk path=$path buildId=$buildId '
+      'tag=${tag ?? config.tagValue}',
+    );
+
+    Directory? tempDir;
+    try {
+      final resolved = await _resolveLocalFile(
+        doc: doc,
+        path: path,
+        fileName: fileName,
+        defaultName: 'app.apk',
+        emptyErrorLabel: 'apk',
+        tempPrefix: 'apk_upload_',
+      );
+      tempDir = resolved.tempDir;
+      final apkPath = resolved.localPath;
+
+      DateTime? lastProgressAt;
+      Future<void> publishUploadProgress({
+        required double percent,
+        int? sizeUploaded,
+        int? chunksUploaded,
+        int? chunksTotal,
+        bool force = false,
+      }) async {
+        final now = DateTime.now();
+        final due = force ||
+            lastProgressAt == null ||
+            now.difference(lastProgressAt!) >= const Duration(seconds: 5);
+        if (!due) return;
+        lastProgressAt = now;
+        try {
+          await ntfy.publish(
+            topic,
+            {
+              'type': 'progress',
+              'action': 'uploadApk',
+              'requestId': requestId,
+              'phase': 'uploading',
+              'percent': percent,
+              'sizeUploaded': ?sizeUploaded,
+              'chunksUploaded': ?chunksUploaded,
+              'chunksTotal': ?chunksTotal,
+            },
+            tags: const ['response', 'agent-response'],
+          );
+        } catch (e) {
+          stderr.writeln('[agent] uploadApk progress publish failed: $e');
+        }
+      }
+
+      await publishUploadProgress(percent: 0, force: true);
+      final result = await appwrite.uploadApkResource(
+        path: apkPath,
+        buildId: buildId,
+        tag: tag,
+        onProgress: (progress) {
+          unawaited(
+            publishUploadProgress(
+              percent: progress.progress,
+              sizeUploaded: progress.sizeUploaded,
+              chunksUploaded: progress.chunksUploaded,
+              chunksTotal: progress.chunksTotal,
+              force: progress.progress >= 100,
+            ),
+          );
+        },
+      );
+      await publishUploadProgress(percent: 100, force: true);
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'uploadApk',
+          'requestId': requestId,
+          'ok': true,
+          'body': {
+            ...result.toJson(),
+            'path': path,
+            'fileName': p.basename(apkPath),
+          },
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'uploadApk',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } finally {
+      if (tempDir != null) {
+        try {
+          await tempDir.delete(recursive: true);
+        } catch (e) {
+          stderr.writeln('[agent] cleanup temp dir failed: $e');
+        }
+      }
+    }
+  }
+
+  Future<void> _handleDeleteApk(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final buildId = payload['buildId']?.toString() ??
+        payload['buildNumber']?.toString();
+    final tag = payload['tag']?.toString();
+
+    if (buildId == null || buildId.isEmpty) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'deleteApk',
+          'requestId': requestId,
+          'ok': false,
+          'error': 'deleteApk requires buildId',
+        },
+        tags: const ['response', 'agent-response'],
+      );
+      return;
+    }
+
+    stdout.writeln(
+      '[agent] deleteApk buildId=$buildId tag=${tag ?? config.tagValue}',
+    );
+    try {
+      final result = await appwrite.deleteApkResource(
+        buildId: buildId,
+        tag: tag,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'deleteApk',
+          'requestId': requestId,
+          'ok': true,
+          'body': result.toJson(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'deleteApk',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    }
+  }
+
+  /// Resolve [path] to a local file. HTTP(S) URLs are downloaded with
+  /// Jenkins host auth; absolute local paths are used as-is.
+  Future<({String localPath, Directory? tempDir})> _resolveLocalFile({
+    required HostDocument doc,
+    required String path,
+    required String defaultName,
+    required String emptyErrorLabel,
+    required String tempPrefix,
+    String? fileName,
+  }) async {
+    final trimmed = path.trim();
+    final uri = Uri.tryParse(trimmed);
+    final isRemote = uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty;
+
+    if (!isRemote) {
+      final local = File(trimmed);
+      if (!await local.exists()) {
+        throw StateError('Local file not found: $trimmed');
+      }
+      return (localPath: local.path, tempDir: null);
+    }
+
+    final name = (fileName != null && fileName.trim().isNotEmpty)
+        ? fileName.trim()
+        : (uri.pathSegments.isNotEmpty &&
+                uri.pathSegments.last.contains('.')
+            ? uri.pathSegments.last
+            : defaultName);
+    final tempDir = await Directory.systemTemp.createTemp(tempPrefix);
+    final destPath = '${tempDir.path}/$name';
+    await jenkins.downloadUrl(
+      doc: doc,
+      url: trimmed,
+      destPath: destPath,
+      emptyErrorLabel: emptyErrorLabel,
+    );
+    return (localPath: destPath, tempDir: tempDir);
   }
 
   Object _safeBody(http.Response response) {

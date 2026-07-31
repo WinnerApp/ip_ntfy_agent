@@ -154,11 +154,58 @@ class AppwriteService {
     _cached = _fromDocument(updated);
   }
 
+  /// Zip resources keep raw [buildId]; APK uses `apk:` prefix so they
+  /// do not collide in the same resource collection.
+  static String storageBuildId(String buildId, {required String kind}) {
+    final id = buildId.trim();
+    if (kind == 'apk') return 'apk:$id';
+    return id;
+  }
+
   /// Upload a local `.zip` to Storage and upsert resource metadata
   /// (`tag` / `fileId` / `buildId`) keyed by tag + buildId.
   Future<ResourceUploadResult> uploadZipResource({
     required String path,
     required String buildId,
+    String? tag,
+    void Function(UploadProgress progress)? onProgress,
+  }) {
+    return _uploadResource(
+      path: path,
+      buildId: buildId,
+      tag: tag,
+      kind: 'zip',
+      allowedExtension: '.zip',
+      contentType: 'application/zip',
+      onProgress: onProgress,
+    );
+  }
+
+  /// Upload a local `.apk` to Storage and upsert resource metadata.
+  /// Stored under buildId `apk:{buildId}` to avoid clashing with zip.
+  Future<ResourceUploadResult> uploadApkResource({
+    required String path,
+    required String buildId,
+    String? tag,
+    void Function(UploadProgress progress)? onProgress,
+  }) {
+    return _uploadResource(
+      path: path,
+      buildId: buildId,
+      tag: tag,
+      kind: 'apk',
+      allowedExtension: '.apk',
+      contentType: 'application/vnd.android.package-archive',
+      onProgress: onProgress,
+    );
+  }
+
+  Future<ResourceUploadResult> _uploadResource({
+    required String path,
+    required String buildId,
+    required String kind,
+    required String allowedExtension,
+    required String contentType,
     String? tag,
     void Function(UploadProgress progress)? onProgress,
   }) async {
@@ -175,13 +222,14 @@ class AppwriteService {
     if (!file.existsSync()) {
       throw StateError('File not found: $path');
     }
-    if (p.extension(path).toLowerCase() != '.zip') {
-      throw ArgumentError('Only .zip files are allowed: $path');
+    if (p.extension(path).toLowerCase() != allowedExtension) {
+      throw ArgumentError('Only $allowedExtension files are allowed: $path');
     }
 
+    final storageId = storageBuildId(resolvedBuildId, kind: kind);
     final existing = await _findResourceDoc(
       tag: resolvedTag,
-      buildId: resolvedBuildId,
+      buildId: storageId,
     );
     final oldFileId = existing?.data['fileId']?.toString();
 
@@ -192,7 +240,7 @@ class AppwriteService {
       file: InputFile.fromPath(
         path: path,
         filename: p.basename(path),
-        contentType: 'application/zip',
+        contentType: contentType,
       ),
       onProgress: onProgress,
     );
@@ -201,7 +249,7 @@ class AppwriteService {
     final data = {
       'tag': resolvedTag,
       'fileId': uploaded.$id,
-      'buildId': resolvedBuildId,
+      'buildId': storageId,
     };
 
     if (existing == null) {
@@ -246,9 +294,25 @@ class AppwriteService {
     );
   }
 
-  /// Delete resource metadata and Storage file keyed by tag + buildId.
+  /// Delete zip resource metadata and Storage file keyed by tag + buildId.
   Future<ResourceDeleteResult> deleteZipResource({
     required String buildId,
+    String? tag,
+  }) {
+    return _deleteResource(buildId: buildId, tag: tag, kind: 'zip');
+  }
+
+  /// Delete apk resource metadata and Storage file keyed by tag + `apk:{buildId}`.
+  Future<ResourceDeleteResult> deleteApkResource({
+    required String buildId,
+    String? tag,
+  }) {
+    return _deleteResource(buildId: buildId, tag: tag, kind: 'apk');
+  }
+
+  Future<ResourceDeleteResult> _deleteResource({
+    required String buildId,
+    required String kind,
     String? tag,
   }) async {
     final resolvedTag = (tag ?? config.tagValue).trim();
@@ -260,9 +324,10 @@ class AppwriteService {
       throw ArgumentError('buildId is required');
     }
 
+    final storageId = storageBuildId(resolvedBuildId, kind: kind);
     final existing = await _findResourceDoc(
       tag: resolvedTag,
-      buildId: resolvedBuildId,
+      buildId: storageId,
     );
     if (existing == null) {
       return ResourceDeleteResult(

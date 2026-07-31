@@ -1,5 +1,6 @@
 import 'package:test/test.dart';
 
+import 'package:ip_ntfy_agent/appwrite_service.dart';
 import 'package:ip_ntfy_agent/ip_service.dart';
 import 'package:ip_ntfy_agent/jenkins_service.dart';
 
@@ -76,6 +77,17 @@ void main() {
       ),
       'http://127.0.0.1:8080/job/build_unity_hot_asset/ws/HotUpdate/3047/IOS'
           '/UploadAssets/*zip*/UploadAssets.zip',
+    );
+  });
+
+  test('storageBuildId prefixes apk to avoid zip collision', () {
+    expect(
+      AppwriteService.storageBuildId('123', kind: 'zip'),
+      '123',
+    );
+    expect(
+      AppwriteService.storageBuildId('123', kind: 'apk'),
+      'apk:123',
     );
   });
 }

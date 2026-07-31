@@ -11,7 +11,9 @@
 5. 收到请求消息后在本机发起 HTTP，再把响应推回同一 topic
 6. 收到 `action=uploadZip` 时：从 Jenkins workspace 下载热更 zip → 上传到 Appwrite Storage（上传中约每 5 秒推送 `type=progress`）→ 写入资源表（`tag` / `fileId` / `buildId`）→ 回传下载 URL
 7. 收到 `action=deleteZip` 时：按 `tag` + `buildId` 删除资源表记录及对应 Storage 文件
-8. 配置 `FEISHU_WEBHOOK_URL` 后：仅在 Jenkins 在线状态变化时推送；IP 变化且 Jenkins 离线时推送最新 `http://IP:8080`
+8. 收到 `action=uploadApk` 时：按调用方提供的本地路径或 HTTP(S) URL 取 apk → 上传到 Appwrite Storage → 回传下载 URL
+9. 收到 `action=deleteApk` 时：按 `tag` + `apk:{buildId}` 删除资源表记录及对应 Storage 文件
+10. 配置 `FEISHU_WEBHOOK_URL` 后：仅在 Jenkins 在线状态变化时推送；IP 变化且 Jenkins 离线时推送最新 `http://IP:8080`
 
 ## 配置
 
@@ -251,3 +253,73 @@ Agent 按与旧发布工具相同的路径，从本机 Jenkins workspace 拉取 
 ```
 
 记录不存在时仍返回 `ok: true`，`body.deleted` 为 `false`。
+
+## 上传 APK（Appwrite Storage）
+
+调用方提供打包机本地绝对路径，或可访问的 HTTP(S) 下载地址（如 Jenkins workspace URL）。Agent 取到本地 `.apk` 后上传 Appwrite，并回传远程 `downloadUrl`。
+
+向当前 IP 对应 topic 发送：
+
+```json
+{
+  "action": "uploadApk",
+  "requestId": "apk-123",
+  "path": "http://127.0.0.1:8080/job/build_unity_first_package/ws/Builds/app.apk",
+  "buildId": "123",
+  "tag": "test"
+}
+```
+
+本地路径示例：
+
+```json
+{
+  "action": "uploadApk",
+  "requestId": "apk-123",
+  "path": "/path/on/packaging/machine/app.apk",
+  "buildId": "123"
+}
+```
+
+- `path` / `file` / `filePath`：必填；本地绝对路径，或 `http`/`https` URL
+- `buildId` / `buildNumber`：必填
+- `tag`：可选，默认用 `.env` 的 `APPWRITE_TAG_VALUE`
+- `fileName` / `filename`：可选；URL 下载时指定本地保存名（默认从 URL 推断，否则 `app.apk`）
+- 资源表中存储的 `buildId` 为 `apk:{buildId}`，与热更 zip 互不覆盖
+- 上传期间约每 5 秒推送 `type=progress`
+
+成功响应示例：
+
+```json
+{
+  "type": "response",
+  "action": "uploadApk",
+  "requestId": "apk-123",
+  "ok": true,
+  "body": {
+    "fileId": "...",
+    "buildId": "123",
+    "tag": "test",
+    "documentId": "...",
+    "downloadUrl": "https://<APPWRITE_HOST>/v1/storage/buckets/<BUCKET_ID>/files/<FILE_ID>/download?project=<PROJECT_ID>",
+    "replaced": false,
+    "path": "...",
+    "fileName": "app.apk"
+  }
+}
+```
+
+## 删除 APK
+
+```json
+{
+  "action": "deleteApk",
+  "requestId": "del-apk-123",
+  "buildId": "123",
+  "tag": "test"
+}
+```
+
+- `buildId` / `buildNumber`：必填
+- `tag`：可选，默认用 `.env` 的 `APPWRITE_TAG_VALUE`
+- 记录不存在时仍返回 `ok: true`，`body.deleted` 为 `false`
