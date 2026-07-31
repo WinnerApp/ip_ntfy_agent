@@ -93,7 +93,17 @@ dart run
 dart run bin/ip_ntfy_agent.dart /path/to/.env
 ```
 
-后台常驻示例：
+后台常驻（推荐，SSH 断开也不停）：
+
+```bash
+./scripts/agent.sh start          # 后台启动（默认读仓库根目录 .env）
+./scripts/agent.sh status         # 查看是否在跑
+./scripts/agent.sh logs -f        # 跟踪日志
+./scripts/agent.sh stop           # 停止
+./scripts/agent.sh restart        # 重启
+```
+
+也可用手工 `nohup`：
 
 ```bash
 # 全局安装后

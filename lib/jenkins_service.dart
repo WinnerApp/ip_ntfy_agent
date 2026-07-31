@@ -23,6 +23,16 @@ class JenkinsService {
     return platform.trim().toUpperCase();
   }
 
+  /// Appwrite 里的打包机 url 常省略端口；Jenkins 默认 8080。
+  /// 不补端口会打到 80（常见 Apache 404），而触发构建经代理已用 8080。
+  static String normalizeJenkinsBase(String jenkinsUrl) {
+    final trimmed = jenkinsUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null || uri.host.isEmpty) return trimmed;
+    if (uri.hasPort) return trimmed;
+    return uri.replace(port: 8080).toString().replaceAll(RegExp(r'/+$'), '');
+  }
+
   /// Jenkins workspace zip URL for a hot-update build.
   ///
   /// `{jenkinsUrl}/job/build_unity_hot_asset/ws/HotUpdate/{buildNumber}/{PLATFORM}/UploadAssets/*zip*/UploadAssets.zip`
@@ -31,7 +41,7 @@ class JenkinsService {
     required String buildNumber,
     required String platform,
   }) {
-    final base = jenkinsUrl.replaceAll(RegExp(r'/+$'), '');
+    final base = normalizeJenkinsBase(jenkinsUrl);
     final dir = artifactPlatformDir(platform);
     return '$base/job/$hotAssetJob/ws/HotUpdate/$buildNumber/$dir'
         '/UploadAssets/*zip*/UploadAssets.zip';
@@ -54,7 +64,7 @@ class JenkinsService {
     if (url == null || url.isEmpty) return false;
 
     try {
-      final uri = Uri.parse(url);
+      final uri = Uri.parse(normalizeJenkinsBase(url));
       final response = await _client
           .get(uri, headers: _authHeaders(doc))
           .timeout(const Duration(seconds: 10));
