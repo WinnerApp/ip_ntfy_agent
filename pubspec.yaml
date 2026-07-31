@@ -9,7 +9,8 @@ executables:
   ip_ntfy_agent:
 
 dependencies:
-  dart_appwrite: ^26.1.0
+  # Appwrite server is 1.6.x. Do not float to 16.2+ ($sequence) or 17+ (File.sizeActual).
+  dart_appwrite: 16.1.0
   dotenv: ^4.2.0
   http: ^1.6.0
   path: ^1.9.0

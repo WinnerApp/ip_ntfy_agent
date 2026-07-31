@@ -85,10 +85,10 @@ packages:
     dependency: "direct main"
     description:
       name: dart_appwrite
-      sha256: ca537d71be70446b97f383a74a53758f67805dbf98d9a026811bba1b93c7d89d
+      sha256: a45bba2015511357ebcd53b99788cf8f770da95c82ced2f269158aad9a3bc21a
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "26.1.0"
+    version: "16.1.0"
   dotenv:
     dependency: "direct main"
     description:
