@@ -114,15 +114,6 @@ class Agent {
     try {
       final doc = appwrite.cached;
       if (doc == null) return;
-      if (doc.active == false) {
-        final changed = doc.online != false;
-        if (changed) {
-          stdout.writeln('[agent] inactive; setting online=false');
-          await appwrite.updateOnline(false);
-          await _notifyJenkinsStatusChanged(false);
-        }
-        return;
-      }
 
       final online = await jenkins.isOnline(doc);
       final dbOnline = doc.online;

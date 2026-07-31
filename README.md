@@ -6,7 +6,7 @@
 
 1. 启动时按 `tag=test`（可配置）查询 Appwrite 文档一次（字段：`url` / `userName` / `password` / `active` / `tag` / `online`）
 2. 启动及每隔 5 秒获取本机 IP；只替换文档 `url` 的 host，保留端口与路径
-3. 每隔 1 分钟用文档里的 `url` + `userName` + `password` 检测 Jenkins；与 `online` 不一致则更新（`active=false` 时置为离线）
+3. 每隔 1 分钟用文档里的 `url` + `userName` + `password` 检测 Jenkins；与 `online` 不一致则更新并通知飞书
 4. 订阅 ntfy topic（例如 IP `10.10.48.63` → `topic_10_10_48_63`）
 5. 收到请求消息后在本机发起 HTTP，再把响应推回同一 topic
 6. 收到 `action=uploadZip` 时：从 Jenkins workspace 下载热更 zip → 上传到 Appwrite Storage（上传中约每 5 秒推送 `type=progress`）→ 写入资源表（`tag` / `fileId` / `buildId`）→ 回传下载 URL
