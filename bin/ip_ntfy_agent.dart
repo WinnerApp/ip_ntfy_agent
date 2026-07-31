@@ -6,7 +6,15 @@ import 'package:ip_ntfy_agent/config.dart';
 
 Future<void> main(List<String> arguments) async {
   final envPath = arguments.isNotEmpty ? arguments.first : null;
-  final config = AppConfig.load(envPath);
+  late final AppConfig config;
+  try {
+    config = AppConfig.load(envPath);
+  } on ConfigException catch (e) {
+    stderr.writeln('[config] $e');
+    exit(1);
+  }
+
+  stdout.writeln('[config] .env OK');
   final agent = Agent(config);
 
   ProcessSignal.sigint.watch().listen((_) async {

@@ -49,8 +49,7 @@ class Agent {
     );
 
     await _syncIp(force: true);
-    // Startup: always announce current Jenkins status (even if DB already matches).
-    await _syncJenkins(announce: true);
+    await _syncJenkins();
 
     _ipTimer = Timer.periodic(config.ipCheckInterval, (_) {
       unawaited(_syncIp());
@@ -108,7 +107,7 @@ class Agent {
     }
   }
 
-  Future<void> _syncJenkins({bool announce = false}) async {
+  Future<void> _syncJenkins() async {
     try {
       final doc = appwrite.cached;
       if (doc == null) return;
@@ -117,8 +116,6 @@ class Agent {
         if (changed) {
           stdout.writeln('[agent] inactive; setting online=false');
           await appwrite.updateOnline(false);
-        }
-        if (changed || announce) {
           await _notifyJenkinsStatusChanged(false);
         }
         return;
@@ -126,15 +123,13 @@ class Agent {
 
       final online = await jenkins.isOnline(doc);
       final dbOnline = doc.online;
-      if (dbOnline != online) {
-        stdout.writeln(
-          '[agent] updating online url=${doc.url}: db=$dbOnline -> $online',
-        );
-        await appwrite.updateOnline(online);
-      }
-      if (dbOnline != online || announce) {
-        await _notifyJenkinsStatusChanged(online);
-      }
+      if (dbOnline == online) return;
+
+      stdout.writeln(
+        '[agent] updating online url=${doc.url}: db=$dbOnline -> $online',
+      );
+      await appwrite.updateOnline(online);
+      await _notifyJenkinsStatusChanged(online);
     } catch (e, st) {
       stderr.writeln('[agent] jenkins sync failed: $e\n$st');
     }
@@ -322,11 +317,59 @@ class Agent {
         destPath: zipPath,
       );
 
+      DateTime? lastProgressAt;
+      Future<void> publishUploadProgress({
+        required double percent,
+        int? sizeUploaded,
+        int? chunksUploaded,
+        int? chunksTotal,
+        bool force = false,
+      }) async {
+        final now = DateTime.now();
+        final due = force ||
+            lastProgressAt == null ||
+            now.difference(lastProgressAt!) >= const Duration(seconds: 5);
+        if (!due) return;
+        lastProgressAt = now;
+        try {
+          await ntfy.publish(
+            topic,
+            {
+              'type': 'progress',
+              'action': 'uploadZip',
+              'requestId': requestId,
+              'phase': 'uploading',
+              'percent': percent,
+              'sizeUploaded': ?sizeUploaded,
+              'chunksUploaded': ?chunksUploaded,
+              'chunksTotal': ?chunksTotal,
+            },
+            tags: const ['response', 'agent-response'],
+          );
+        } catch (e) {
+          stderr.writeln('[agent] uploadZip progress publish failed: $e');
+        }
+      }
+
+      await publishUploadProgress(percent: 0, force: true);
       final result = await appwrite.uploadZipResource(
         path: zipPath,
         buildId: buildId,
         tag: tag,
+        onProgress: (progress) {
+          unawaited(
+            publishUploadProgress(
+              percent: progress.progress,
+              sizeUploaded: progress.sizeUploaded,
+              chunksUploaded: progress.chunksUploaded,
+              chunksTotal: progress.chunksTotal,
+              force: progress.progress >= 100,
+            ),
+          );
+        },
       );
+      // Small files skip SDK onProgress; always emit a terminal progress.
+      await publishUploadProgress(percent: 100, force: true);
       await ntfy.publish(
         topic,
         {

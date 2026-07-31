@@ -9,9 +9,9 @@
 3. 每隔 1 分钟用文档里的 `url` + `userName` + `password` 检测 Jenkins；与 `online` 不一致则更新（`active=false` 时置为离线）
 4. 订阅 ntfy topic（例如 IP `10.10.48.63` → `topic_10_10_48_63`）
 5. 收到请求消息后在本机发起 HTTP，再把响应推回同一 topic
-6. 收到 `action=uploadZip` 时：从 Jenkins workspace 下载热更 zip → 上传到 Appwrite Storage → 写入资源表（`tag` / `fileId` / `buildId`）→ 回传下载 URL
+6. 收到 `action=uploadZip` 时：从 Jenkins workspace 下载热更 zip → 上传到 Appwrite Storage（上传中约每 5 秒推送 `type=progress`）→ 写入资源表（`tag` / `fileId` / `buildId`）→ 回传下载 URL
 7. 收到 `action=deleteZip` 时：按 `tag` + `buildId` 删除资源表记录及对应 Storage 文件
-8. 配置 `FEISHU_WEBHOOK_URL` 后：启动时推送当前 Jenkins 在线/离线状态；IP 变化且 Jenkins 离线时推送最新 `http://IP:8080`；之后仅在 Jenkins 在线状态变化时再推送
+8. 配置 `FEISHU_WEBHOOK_URL` 后：仅在 Jenkins 在线状态变化时推送；IP 变化且 Jenkins 离线时推送最新 `http://IP:8080`
 
 ## 配置
 
@@ -22,7 +22,9 @@ cp .env.example .env
 ```
 
 全局安装后，默认从**当前工作目录**的 `.env` 读取配置；也可把路径作为第一个参数传入。
-主要变量：
+启动时会校验 `.env` 是否存在，并一次性检查所有必填项是否已填写（占位符如 `your_api_key_here` 视为未配置）。
+
+必填变量：
 
 | Key | 说明 |
 | --- | --- |
@@ -33,9 +35,17 @@ cp .env.example .env
 | `APPWRITE_COLLECTION_ID` | 打包机 host 文档 collection |
 | `APPWRITE_BUCKET_ID` | 热更 zip 存储桶 ID |
 | `APPWRITE_RESOURCE_COLLECTION_ID` | 资源元数据表 ID（字段 `tag` / `fileId` / `buildId`） |
+| `APPWRITE_TAG_VALUE` | 打包机 tag（如 `test` / `release`） |
 | `NTFY_BASE_URL` | ntfy 服务地址 |
-| `FEISHU_WEBHOOK_URL` | 飞书自定义机器人 Webhook（可选） |
+
+可选变量：
+
+| Key | 说明 |
+| --- | --- |
+| `NTFY_AUTH` | ntfy 鉴权头（如 `Bearer <token>`） |
+| `FEISHU_WEBHOOK_URL` | 飞书自定义机器人 Webhook |
 | `JENKINS_CHECK_INTERVAL_SECONDS` | Jenkins 在线检测间隔（默认 60） |
+| `IP_CHECK_INTERVAL_SECONDS` | IP 检测间隔（默认 5） |
 
 Jenkins 的 `url` / `userName` / `password` / `active` 从 Appwrite 文档读取，不在 `.env` 配置。
 
@@ -112,7 +122,7 @@ nohup dart run >> agent.log 2>&1 &
 }
 ```
 
-Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` 的消息，避免回环。
+Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `"type":"progress"` 的消息，避免回环。
 
 响应示例：
 
@@ -156,6 +166,22 @@ Agent 按与旧发布工具相同的路径，从本机 Jenkins workspace 拉取 
 - `platform`：`iOS` / `Android` / `HarmonyOS`（必填）
 - `tag`：可选，默认用 `.env` 的 `APPWRITE_TAG_VALUE`（`test` / `release`）
 - 同一 `tag` + `buildId` 会覆盖旧记录，并删除旧 Storage 文件
+- 上传到 Appwrite Storage 期间，约每 5 秒（及开始/完成时）推送进度消息
+
+进度消息示例：
+
+```json
+{
+  "type": "progress",
+  "action": "uploadZip",
+  "requestId": "build-123",
+  "phase": "uploading",
+  "percent": 42.5,
+  "sizeUploaded": 1234567,
+  "chunksUploaded": 3,
+  "chunksTotal": 7
+}
+```
 
 成功响应示例：
 

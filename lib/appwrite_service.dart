@@ -160,6 +160,7 @@ class AppwriteService {
     required String path,
     required String buildId,
     String? tag,
+    void Function(UploadProgress progress)? onProgress,
   }) async {
     final resolvedTag = (tag ?? config.tagValue).trim();
     final resolvedBuildId = buildId.trim();
@@ -193,6 +194,7 @@ class AppwriteService {
         filename: p.basename(path),
         contentType: 'application/zip',
       ),
+      onProgress: onProgress,
     );
 
     late final Document resourceDoc;

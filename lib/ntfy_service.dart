@@ -170,7 +170,8 @@ class NtfyService {
         payload = {'raw': message};
       }
 
-      if (payload['type']?.toString() == 'response') return;
+      final payloadType = payload['type']?.toString();
+      if (payloadType == 'response' || payloadType == 'progress') return;
 
       _logRecv(_currentTopic ?? event['topic']?.toString() ?? '?', message);
       await onMessage(payload);
