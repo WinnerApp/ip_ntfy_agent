@@ -152,6 +152,48 @@ Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `
 }
 ```
 
+代理到**文件**（二进制/`Content-Disposition: attachment` 等）或响应过大（超过 ntfy 文本消息上限）时，**不回传 body**，只返回文件名 / 文件夹名等元数据，避免触发 ntfy `attachments not allowed`。实际下载请走 `uploadApk` / `uploadZip` 等其它通道：
+
+```json
+{
+  "type": "response",
+  "requestId": "optional-id",
+  "ok": true,
+  "statusCode": 200,
+  "body": null,
+  "bodyOmitted": true,
+  "omitReason": "file",
+  "fileName": "app.apk",
+  "folderName": "Builds",
+  "contentType": "application/vnd.android.package-archive",
+  "contentLength": 12345678,
+  "request": {
+    "method": "GET",
+    "url": "http://127.0.0.1:8080/job/.../ws/Builds/app.apk"
+  }
+}
+```
+
+代理 Jenkins workspace **目录**（如 `/job/.../ws/`）时，自动改走 `*plain*` 文本列表，只返回文件名 / 文件夹名：
+
+```json
+{
+  "type": "response",
+  "requestId": "optional-id",
+  "ok": true,
+  "statusCode": 200,
+  "body": {
+    "files": ["app.apk", "notes.txt"],
+    "folders": ["Builds", "HotUpdate"],
+    "folderName": "ws"
+  },
+  "request": {
+    "method": "GET",
+    "url": "http://127.0.0.1:8080/job/build_unity_cache/ws/"
+  }
+}
+```
+
 ## 上传热更 zip（Appwrite Storage）
 
 Agent 按与旧发布工具相同的路径，从本机 Jenkins workspace 拉取 zip，再上传到 Appwrite：

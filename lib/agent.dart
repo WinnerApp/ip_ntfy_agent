@@ -208,6 +208,13 @@ class Agent {
       requestUri = requestUri.replace(queryParameters: query);
     }
 
+    final clientUri = requestUri;
+    final useJenkinsPlain =
+        method == 'GET' && _isJenkinsWorkspaceDir(requestUri);
+    if (useJenkinsPlain) {
+      requestUri = _withJenkinsPlainListing(requestUri);
+    }
+
     final body = payload['body'] ?? payload['data'];
     String? encodedBody;
     if (body != null) {
@@ -222,7 +229,11 @@ class Agent {
       }
     }
 
-    stdout.writeln('[agent] proxy $method $requestUri');
+    stdout.writeln(
+      useJenkinsPlain
+          ? '[agent] proxy $method $clientUri -> ${requestUri.path} (dir listing)'
+          : '[agent] proxy $method $requestUri',
+    );
     late http.Response response;
     try {
       final request = http.Request(method, requestUri);
@@ -242,7 +253,7 @@ class Agent {
           'error': e.toString(),
           'request': {
             'method': method,
-            'url': requestUri.toString(),
+            'url': clientUri.toString(),
           },
         },
         tags: const ['response', 'agent-response'],
@@ -252,18 +263,13 @@ class Agent {
 
     await ntfy.publish(
       topic,
-      {
-        'type': 'response',
-        'requestId': payload['requestId'] ?? payload['id'],
-        'ok': true,
-        'statusCode': response.statusCode,
-        'headers': response.headers,
-        'body': _safeBody(response),
-        'request': {
-          'method': method,
-          'url': requestUri.toString(),
-        },
-      },
+      _buildProxyResponse(
+        requestId: payload['requestId'] ?? payload['id'],
+        method: method,
+        requestUri: clientUri,
+        response: response,
+        jenkinsDirListing: useJenkinsPlain,
+      ),
       tags: const ['response', 'agent-response'],
     );
   }
@@ -773,6 +779,213 @@ class Agent {
       emptyErrorLabel: emptyErrorLabel,
     );
     return (localPath: destPath, tempDir: tempDir);
+  }
+
+  /// ntfy 默认 message-size 约 4KB；超出则按附件处理，自建未开附件会 40014。
+  static const _ntfyMessageBudget = 3500;
+
+  Map<String, dynamic> _buildProxyResponse({
+    required Object? requestId,
+    required String method,
+    required Uri requestUri,
+    required http.Response response,
+    bool jenkinsDirListing = false,
+  }) {
+    final requestMeta = {
+      'method': method,
+      'url': requestUri.toString(),
+    };
+    final names = _fileFolderNames(
+      requestUri: requestUri,
+      headers: response.headers,
+    );
+    final contentType = response.headers[HttpHeaders.contentTypeHeader];
+    final declaredLength = response.contentLength;
+    final contentLength = (declaredLength != null && declaredLength >= 0)
+        ? declaredLength
+        : response.bodyBytes.length;
+
+    if (jenkinsDirListing &&
+        response.statusCode >= 200 &&
+        response.statusCode < 300) {
+      final listing = _parseJenkinsPlainListing(response.body);
+      return {
+        'type': 'response',
+        'requestId': requestId,
+        'ok': true,
+        'statusCode': response.statusCode,
+        'body': {
+          'files': listing.files,
+          'folders': listing.folders,
+          'folderName': names.folderName ??
+              _workspaceLeafName(requestUri) ??
+              'ws',
+        },
+        'request': requestMeta,
+      };
+    }
+
+    Map<String, dynamic> full() => {
+          'type': 'response',
+          'requestId': requestId,
+          'ok': true,
+          'statusCode': response.statusCode,
+          'headers': response.headers,
+          'body': _safeBody(response),
+          'request': requestMeta,
+        };
+
+    Map<String, dynamic> metaOnly({required String reason}) => {
+          'type': 'response',
+          'requestId': requestId,
+          'ok': true,
+          'statusCode': response.statusCode,
+          'body': null,
+          'bodyOmitted': true,
+          'omitReason': reason,
+          'fileName': names.fileName,
+          'folderName': names.folderName,
+          'contentType': ?contentType,
+          'contentLength': contentLength,
+          'request': requestMeta,
+        };
+
+    if (_looksLikeFileResponse(response)) {
+      return metaOnly(reason: 'file');
+    }
+
+    final candidate = full();
+    if (utf8.encode(jsonEncode(candidate)).length <= _ntfyMessageBudget) {
+      return candidate;
+    }
+    return metaOnly(reason: 'too_large');
+  }
+
+  /// Jenkins `/job/.../ws/...` 目录页（HTML）过大，改走 `*plain*` 文本列表。
+  bool _isJenkinsWorkspaceDir(Uri uri) {
+    final segments =
+        uri.pathSegments.where((s) => s.isNotEmpty).toList(growable: false);
+    final wsIdx = segments.indexOf('ws');
+    if (wsIdx < 0) return false;
+    if (segments.any((s) =>
+        s == '*plain*' || s == '*zip*' || s == '*view*' || s == '*fingerprint*')) {
+      return false;
+    }
+    if (uri.path.endsWith('/')) return true;
+    // `/ws` 或子目录无扩展名时按目录处理；带扩展名视为文件。
+    final last = segments.last;
+    return !last.contains('.');
+  }
+
+  Uri _withJenkinsPlainListing(Uri uri) {
+    var path = uri.path;
+    if (!path.endsWith('/')) path = '$path/';
+    return uri.replace(path: '$path*plain*/');
+  }
+
+  ({List<String> files, List<String> folders}) _parseJenkinsPlainListing(
+    String body,
+  ) {
+    final files = <String>[];
+    final folders = <String>[];
+    for (final line in const LineSplitter().convert(body)) {
+      final name = line.trim();
+      if (name.isEmpty) continue;
+      if (name.endsWith('/')) {
+        folders.add(name.substring(0, name.length - 1));
+      } else {
+        files.add(name);
+      }
+    }
+    return (files: files, folders: folders);
+  }
+
+  String? _workspaceLeafName(Uri uri) {
+    final segments =
+        uri.pathSegments.where((s) => s.isNotEmpty).toList(growable: false);
+    final wsIdx = segments.indexOf('ws');
+    if (wsIdx < 0) return null;
+    if (wsIdx == segments.length - 1) return 'ws';
+    return segments.last;
+  }
+
+  bool _looksLikeFileResponse(http.Response response) {
+    final disposition = response.headers['content-disposition'] ?? '';
+    if (disposition.toLowerCase().contains('attachment') ||
+        disposition.toLowerCase().contains('filename=')) {
+      return true;
+    }
+
+    final rawType =
+        (response.headers[HttpHeaders.contentTypeHeader] ?? '').toLowerCase();
+    final mime = rawType.split(';').first.trim();
+    if (mime.isEmpty) {
+      return false;
+    }
+    const textLike = {
+      'application/json',
+      'application/xml',
+      'application/javascript',
+      'application/x-www-form-urlencoded',
+      'application/problem+json',
+    };
+    if (mime.startsWith('text/') || textLike.contains(mime)) {
+      return false;
+    }
+    if (mime.endsWith('+json') || mime.endsWith('+xml')) {
+      return false;
+    }
+    return true;
+  }
+
+  ({String? fileName, String? folderName}) _fileFolderNames({
+    required Uri requestUri,
+    required Map<String, String> headers,
+  }) {
+    String? fileName = _filenameFromContentDisposition(
+      headers['content-disposition'],
+    );
+
+    final segments = requestUri.pathSegments
+        .where((s) => s.isNotEmpty)
+        .map(Uri.decodeComponent)
+        .toList();
+    if (fileName == null && segments.isNotEmpty) {
+      final last = segments.last;
+      if (last.contains('.')) {
+        fileName = last;
+      }
+    }
+
+    String? folderName;
+    if (segments.length >= 2) {
+      folderName = segments[segments.length - 2];
+    } else if (segments.length == 1 && fileName == null) {
+      folderName = segments.first;
+    }
+
+    return (fileName: fileName, folderName: folderName);
+  }
+
+  String? _filenameFromContentDisposition(String? header) {
+    if (header == null || header.isEmpty) return null;
+    final star = RegExp(
+      r"filename\*\s*=\s*(?:UTF-8''|utf-8'')([^;]+)",
+      caseSensitive: false,
+    ).firstMatch(header);
+    if (star != null) {
+      try {
+        return Uri.decodeComponent(star.group(1)!.trim());
+      } catch (_) {
+        return star.group(1)!.trim();
+      }
+    }
+    final plain = RegExp(
+      r'filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)',
+      caseSensitive: false,
+    ).firstMatch(header);
+    if (plain == null) return null;
+    return (plain.group(1) ?? plain.group(2))?.trim();
   }
 
   Object _safeBody(http.Response response) {
