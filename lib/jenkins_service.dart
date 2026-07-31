@@ -33,6 +33,14 @@ class JenkinsService {
     return uri.replace(port: 8080).toString().replaceAll(RegExp(r'/+$'), '');
   }
 
+  /// Agent 与 Jenkins 同机：下载 zip 一律走本机 127.0.0.1，端口取自文档 url（缺省 8080）。
+  /// 避免用文档里的公网/局域网 IP 且漏端口时打到 80（Apache 404）。
+  static String localJenkinsBase(String? jenkinsUrl) {
+    final uri = Uri.tryParse((jenkinsUrl ?? '').trim());
+    final port = (uri != null && uri.hasPort) ? uri.port : 8080;
+    return 'http://127.0.0.1:$port';
+  }
+
   /// Jenkins workspace zip URL for a hot-update build.
   ///
   /// `{jenkinsUrl}/job/build_unity_hot_asset/ws/HotUpdate/{buildNumber}/{PLATFORM}/UploadAssets/*zip*/UploadAssets.zip`
@@ -81,17 +89,16 @@ class JenkinsService {
     required String platform,
     required String destPath,
   }) async {
-    final jenkinsUrl = doc.url?.trim();
-    if (jenkinsUrl == null || jenkinsUrl.isEmpty) {
-      throw StateError('Jenkins url is empty on host document');
-    }
-
+    // 本机下载：用 127.0.0.1 + 文档端口，不依赖 Appwrite url 是否带 :8080。
     final zipUrl = hotUpdateZipUrl(
-      jenkinsUrl: jenkinsUrl,
+      jenkinsUrl: localJenkinsBase(doc.url),
       buildNumber: buildNumber,
       platform: platform,
     );
-    stdout.writeln('[jenkins] download hot-update zip: $zipUrl');
+    stdout.writeln(
+      '[jenkins] download hot-update zip: $zipUrl '
+      '(doc.url=${doc.url})',
+    );
 
     final dest = File(destPath);
     await dest.parent.create(recursive: true);

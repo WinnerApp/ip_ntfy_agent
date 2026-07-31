@@ -54,4 +54,28 @@ void main() {
       'Harmony',
     );
   });
+
+  test('localJenkinsBase uses 127.0.0.1 and doc port (default 8080)', () {
+    expect(
+      JenkinsService.localJenkinsBase('http://10.10.48.63'),
+      'http://127.0.0.1:8080',
+    );
+    expect(
+      JenkinsService.localJenkinsBase('http://10.10.48.63:8080/'),
+      'http://127.0.0.1:8080',
+    );
+    expect(
+      JenkinsService.localJenkinsBase('http://10.10.48.63:9090'),
+      'http://127.0.0.1:9090',
+    );
+    expect(
+      JenkinsService.hotUpdateZipUrl(
+        jenkinsUrl: JenkinsService.localJenkinsBase('http://10.10.48.63'),
+        buildNumber: '3047',
+        platform: 'iOS',
+      ),
+      'http://127.0.0.1:8080/job/build_unity_hot_asset/ws/HotUpdate/3047/IOS'
+          '/UploadAssets/*zip*/UploadAssets.zip',
+    );
+  });
 }
