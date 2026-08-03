@@ -31,11 +31,25 @@ Future<void> main(List<String> arguments) async {
     });
   }
 
-  try {
-    await agent.start();
-  } catch (e, st) {
-    stderr.writeln('[agent] fatal: $e\n$st');
-    await agent.stop();
-    exit(1);
-  }
+  // dart:io may surface "unsolicited response" asynchronously after a proxy
+  // timeout; treat as non-fatal and rebuild the Appwrite HttpClient.
+  await runZonedGuarded(
+    () async {
+      try {
+        await agent.start();
+      } catch (e, st) {
+        stderr.writeln('[agent] fatal: $e\n$st');
+        await agent.stop();
+        exit(1);
+      }
+    },
+    (error, stack) {
+      stderr.writeln('[agent] unhandled async error: $error\n$stack');
+      try {
+        agent.appwrite.resetClient();
+      } catch (e) {
+        stderr.writeln('[agent] appwrite client reset failed: $e');
+      }
+    },
+  );
 }

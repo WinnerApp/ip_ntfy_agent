@@ -427,6 +427,8 @@ class Agent {
         tags: const ['response', 'agent-response'],
       );
     } catch (e) {
+      // Mid-upload gateway timeouts can leave dart_appwrite's HttpClient dirty.
+      appwrite.resetClient();
       await ntfy.publish(
         topic,
         {
@@ -663,6 +665,7 @@ class Agent {
         tags: const ['response', 'agent-response'],
       );
     } catch (e) {
+      appwrite.resetClient();
       await ntfy.publish(
         topic,
         {

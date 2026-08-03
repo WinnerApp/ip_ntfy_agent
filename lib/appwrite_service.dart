@@ -83,21 +83,35 @@ class ResourceDeleteResult {
 
 class AppwriteService {
   AppwriteService(this.config) {
-    final client = Client(endPoint: config.appwriteEndpoint)
-        .setProject(config.appwriteProjectId)
-        .setKey(config.appwriteApiKey)
-        .setSelfSigned(status: config.appwriteSelfSigned);
-    _databases = Databases(client);
-    _storage = Storage(client);
+    _bindClient(_newClient());
   }
 
   final AppConfig config;
-  late final Databases _databases;
-  late final Storage _storage;
+  late Databases _databases;
+  late Storage _storage;
 
   HostDocument? _cached;
 
   HostDocument? get cached => _cached;
+
+  Client _newClient() {
+    return Client(endPoint: config.appwriteEndpoint)
+        .setProject(config.appwriteProjectId)
+        .setKey(config.appwriteApiKey)
+        .setSelfSigned(status: config.appwriteSelfSigned);
+  }
+
+  void _bindClient(Client client) {
+    _databases = Databases(client);
+    _storage = Storage(client);
+  }
+
+  /// Drop the shared dart:io HttpClient after timeouts / connection corruption
+  /// (e.g. 504 mid-upload → later "unsolicited response") so later calls work.
+  void resetClient() {
+    _bindClient(_newClient());
+    stderr.writeln('[appwrite] client reset');
+  }
 
   Future<HostDocument?> loadByTag() async {
     // Databases API matches console collection path; TablesDB is the newer alias.
