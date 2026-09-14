@@ -154,7 +154,7 @@ Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `
 }
 ```
 
-代理到**文件**（二进制/`Content-Disposition: attachment` 等）时，**不回传 body**，只返回文件名 / 文件夹名等元数据，避免触发 ntfy `attachments not allowed`。实际下载请走 `uploadApk` / `uploadZip` 等其它通道：
+代理到**文件**（二进制/`Content-Disposition: attachment` 等）时，**不回传 body**，只返回文件名 / 文件夹名等元数据，避免触发 ntfy `attachments not allowed`。实际下载请走 `uploadApk` / `uploadZip` / `downloadBuildLog` 等其它通道：
 
 ```json
 {
@@ -175,6 +175,8 @@ Agent 会忽略带 `response` / `agent-response` tag 或 `"type":"response"` / `
   }
 }
 ```
+
+文本响应超过约 **200KB** 时同样省略 body，`omitReason` 为 `too_large`（例如整包 `consoleText`）。在线查看请用 Jenkins `logText/progressiveText` 分块，或走 `downloadBuildLog` 下载完整日志。
 
 代理 Jenkins workspace **目录**（如 `/job/.../ws/`）时，自动改走 `*plain*` 文本列表，只返回文件名 / 文件夹名：
 
@@ -366,4 +368,71 @@ Agent 按与旧发布工具相同的路径，从本机 Jenkins workspace 拉取 
 
 - `buildId` / `buildNumber`：必填
 - `tag`：可选，默认用 `.env` 的 `APPWRITE_TAG_VALUE`
+- 记录不存在时仍返回 `ok: true`，`body.deleted` 为 `false`
+
+## 查看 Agent 运行日志
+
+读取打包机上 `.run/agent.log`（与 `./scripts/agent.sh logs` 同源）末尾若干行，经 ntfy 内联返回（正文硬上限约 200KB）：
+
+```json
+{
+  "action": "getAgentLog",
+  "requestId": "agent-log-1",
+  "lines": 500
+}
+```
+
+- `lines`：可选，默认 `500`，上限 `2000`
+- 成功 `body`：`{ text, path, lines, truncated, size }`
+- `truncated: true` 表示只返回了尾部；完整文件请用 `downloadAgentLog`
+
+## 下载完整 Agent 日志
+
+将 `agent.log` 上传 Appwrite Storage，回传 `downloadUrl`（上传中有 `type=progress`）：
+
+```json
+{
+  "action": "downloadAgentLog",
+  "requestId": "agent-log-dl-1",
+  "tag": "test"
+}
+```
+
+- `buildId`：可选；缺省为 `agent:{timestamp}`
+- `tag`：可选
+- 客户端流程：下载 `downloadUrl` → `deleteLog` 清理
+
+## 下载 Jenkins 构建日志
+
+Agent 本机拉取 `.../job/{jobName}/{buildNumber}/consoleText`，上传 Appwrite 后回传 `downloadUrl`：
+
+```json
+{
+  "action": "downloadBuildLog",
+  "requestId": "build-log-1",
+  "jobName": "build_unity_hot_asset",
+  "buildNumber": "123",
+  "tag": "test"
+}
+```
+
+- `jobName` / `job`：必填
+- `buildNumber` / `buildId`：必填
+- 资源表 `buildId` 存为 `log:{jobName}:{buildNumber}`
+- 客户端流程：下载 `downloadUrl` → `deleteLog` 清理
+
+## 删除临时日志文件
+
+按 `tag` + `buildId` 删除日志资源（Agent / 构建日志下载产生的临时文件）：
+
+```json
+{
+  "action": "deleteLog",
+  "requestId": "del-log-1",
+  "buildId": "log:build_unity_hot_asset:123",
+  "tag": "test"
+}
+```
+
+- `buildId`：必填（与下载时返回的 `body.buildId` 一致，如 `agent:...` 或 `log:...`）
 - 记录不存在时仍返回 `ok: true`，`body.deleted` 为 `false`

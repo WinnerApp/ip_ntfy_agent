@@ -32,8 +32,11 @@ class Agent {
   String? _currentIp;
   bool _running = false;
   final Completer<void> _done = Completer<void>();
-  /// 进行中的 uploadZip requestId，避免同进程重复处理。
+  /// 进行中的 uploadZip / download*Log requestId，避免同进程重复处理。
   final _inflightUploadIds = <String>{};
+
+  /// Inline text bodies larger than this are omitted from ntfy responses.
+  static const _maxInlineBodyBytes = 200 * 1024;
 
   Future<void> start() async {
     if (_running) return;
@@ -171,6 +174,22 @@ class Agent {
     }
     if (action == 'deleteApk') {
       await _handleDeleteApk(topic, payload);
+      return;
+    }
+    if (action == 'getAgentLog') {
+      await _handleGetAgentLog(topic, payload);
+      return;
+    }
+    if (action == 'downloadAgentLog') {
+      await _handleDownloadAgentLog(topic, payload);
+      return;
+    }
+    if (action == 'downloadBuildLog') {
+      await _handleDownloadBuildLog(topic, payload);
+      return;
+    }
+    if (action == 'deleteLog') {
+      await _handleDeleteLog(topic, payload);
       return;
     }
 
@@ -746,6 +765,498 @@ class Agent {
     }
   }
 
+  Future<void> _handleGetAgentLog(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    var lines = 500;
+    final rawLines = payload['lines'];
+    if (rawLines is num) {
+      lines = rawLines.toInt();
+    } else if (rawLines != null) {
+      lines = int.tryParse('$rawLines') ?? 500;
+    }
+    if (lines < 1) lines = 1;
+    if (lines > 2000) lines = 2000;
+
+    try {
+      final logFile = _resolveAgentLogFile();
+      if (logFile == null || !await logFile.exists()) {
+        await ntfy.publish(
+          topic,
+          {
+            'type': 'response',
+            'action': 'getAgentLog',
+            'requestId': requestId,
+            'ok': false,
+            'error': 'Agent log file not found '
+                '(expected .run/agent.log under repo or cwd)',
+          },
+          tags: const ['response', 'agent-response'],
+        );
+        return;
+      }
+
+      final size = await logFile.length();
+      final tail = await _readLogTail(
+        logFile,
+        lines: lines,
+        maxBytes: _maxInlineBodyBytes,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'getAgentLog',
+          'requestId': requestId,
+          'ok': true,
+          'body': {
+            'text': tail.text,
+            'path': logFile.path,
+            'lines': tail.lineCount,
+            'truncated': tail.truncated,
+            'size': size,
+          },
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'getAgentLog',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    }
+  }
+
+  Future<void> _handleDownloadAgentLog(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final requestKey = requestId?.toString() ?? '';
+    final tag = payload['tag']?.toString();
+    final rawBuildId = payload['buildId']?.toString().trim();
+    final buildId = (rawBuildId != null && rawBuildId.isNotEmpty)
+        ? rawBuildId
+        : 'agent:${DateTime.now().millisecondsSinceEpoch}';
+
+    if (requestKey.isNotEmpty && !_inflightUploadIds.add(requestKey)) {
+      stdout.writeln(
+        '[agent] skip duplicate downloadAgentLog requestId=$requestKey',
+      );
+      return;
+    }
+
+    try {
+      final logFile = _resolveAgentLogFile();
+      if (logFile == null || !await logFile.exists()) {
+        await ntfy.publish(
+          topic,
+          {
+            'type': 'response',
+            'action': 'downloadAgentLog',
+            'requestId': requestId,
+            'ok': false,
+            'error': 'Agent log file not found',
+          },
+          tags: const ['response', 'agent-response'],
+        );
+        return;
+      }
+
+      stdout.writeln(
+        '[agent] downloadAgentLog path=${logFile.path} buildId=$buildId',
+      );
+      final result = await _uploadLogWithProgress(
+        topic: topic,
+        action: 'downloadAgentLog',
+        requestId: requestId,
+        path: logFile.path,
+        buildId: buildId,
+        tag: tag,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'downloadAgentLog',
+          'requestId': requestId,
+          'ok': true,
+          'body': {
+            ...result.toJson(),
+            'fileName': p.basename(logFile.path),
+            'path': logFile.path,
+          },
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      appwrite.resetClient();
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'downloadAgentLog',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } finally {
+      if (requestKey.isNotEmpty) {
+        _inflightUploadIds.remove(requestKey);
+      }
+    }
+  }
+
+  Future<void> _handleDownloadBuildLog(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final requestKey = requestId?.toString() ?? '';
+    final jobName = payload['jobName']?.toString().trim() ??
+        payload['job']?.toString().trim();
+    final buildNumber = payload['buildNumber']?.toString().trim() ??
+        payload['buildId']?.toString().trim();
+    final tag = payload['tag']?.toString();
+
+    if (jobName == null ||
+        jobName.isEmpty ||
+        buildNumber == null ||
+        buildNumber.isEmpty) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'downloadBuildLog',
+          'requestId': requestId,
+          'ok': false,
+          'error': 'downloadBuildLog requires jobName and buildNumber',
+        },
+        tags: const ['response', 'agent-response'],
+      );
+      return;
+    }
+
+    if (requestKey.isNotEmpty && !_inflightUploadIds.add(requestKey)) {
+      stdout.writeln(
+        '[agent] skip duplicate downloadBuildLog requestId=$requestKey',
+      );
+      return;
+    }
+
+    Directory? tempDir;
+    try {
+      final doc = appwrite.cached;
+      if (doc == null) {
+        await ntfy.publish(
+          topic,
+          {
+            'type': 'response',
+            'action': 'downloadBuildLog',
+            'requestId': requestId,
+            'ok': false,
+            'error': 'No Jenkins host document loaded',
+          },
+          tags: const ['response', 'agent-response'],
+        );
+        return;
+      }
+
+      final encodedJob = Uri.encodeComponent(jobName);
+      final base = JenkinsService.localJenkinsBase(doc.url);
+      final consoleUrl = '$base/job/$encodedJob/$buildNumber/consoleText';
+      final storageBuildId = 'log:$jobName:$buildNumber';
+      final safeName =
+          '${jobName.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_')}'
+          '_$buildNumber.log';
+
+      tempDir = await Directory.systemTemp.createTemp('build_log_');
+      final destPath = '${tempDir.path}/$safeName';
+      stdout.writeln(
+        '[agent] downloadBuildLog job=$jobName #$buildNumber url=$consoleUrl',
+      );
+      await jenkins.downloadUrl(
+        doc: doc,
+        url: consoleUrl,
+        destPath: destPath,
+        emptyErrorLabel: 'build log',
+      );
+
+      final result = await _uploadLogWithProgress(
+        topic: topic,
+        action: 'downloadBuildLog',
+        requestId: requestId,
+        path: destPath,
+        buildId: storageBuildId,
+        tag: tag,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'downloadBuildLog',
+          'requestId': requestId,
+          'ok': true,
+          'body': {
+            ...result.toJson(),
+            'jobName': jobName,
+            'buildNumber': buildNumber,
+            'fileName': safeName,
+          },
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      appwrite.resetClient();
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'downloadBuildLog',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } finally {
+      if (requestKey.isNotEmpty) {
+        _inflightUploadIds.remove(requestKey);
+      }
+      if (tempDir != null) {
+        try {
+          await tempDir.delete(recursive: true);
+        } catch (e) {
+          stderr.writeln('[agent] cleanup build log temp failed: $e');
+        }
+      }
+    }
+  }
+
+  Future<void> _handleDeleteLog(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final buildId = payload['buildId']?.toString() ??
+        payload['buildNumber']?.toString();
+    final tag = payload['tag']?.toString();
+
+    if (buildId == null || buildId.isEmpty) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'deleteLog',
+          'requestId': requestId,
+          'ok': false,
+          'error': 'deleteLog requires buildId',
+        },
+        tags: const ['response', 'agent-response'],
+      );
+      return;
+    }
+
+    stdout.writeln(
+      '[agent] deleteLog buildId=$buildId tag=${tag ?? config.tagValue}',
+    );
+    try {
+      final result = await appwrite.deleteLogResource(
+        buildId: buildId,
+        tag: tag,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'deleteLog',
+          'requestId': requestId,
+          'ok': true,
+          'body': result.toJson(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'deleteLog',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    }
+  }
+
+  Future<ResourceUploadResult> _uploadLogWithProgress({
+    required String topic,
+    required String action,
+    required Object? requestId,
+    required String path,
+    required String buildId,
+    String? tag,
+  }) async {
+    DateTime? lastProgressAt;
+    Future<void> publishUploadProgress({
+      required double percent,
+      int? sizeUploaded,
+      int? chunksUploaded,
+      int? chunksTotal,
+      bool force = false,
+    }) async {
+      final now = DateTime.now();
+      final due = force ||
+          lastProgressAt == null ||
+          now.difference(lastProgressAt!) >= const Duration(seconds: 5);
+      if (!due) return;
+      lastProgressAt = now;
+      try {
+        await ntfy.publish(
+          topic,
+          {
+            'type': 'progress',
+            'action': action,
+            'requestId': requestId,
+            'phase': 'uploading',
+            'percent': percent,
+            'sizeUploaded': ?sizeUploaded,
+            'chunksUploaded': ?chunksUploaded,
+            'chunksTotal': ?chunksTotal,
+          },
+          tags: const ['response', 'agent-response'],
+        );
+      } catch (e) {
+        stderr.writeln('[agent] $action progress publish failed: $e');
+      }
+    }
+
+    await publishUploadProgress(percent: 0, force: true);
+    final result = await appwrite.uploadLogResource(
+      path: path,
+      buildId: buildId,
+      tag: tag,
+      onProgress: (progress) {
+        unawaited(
+          publishUploadProgress(
+            percent: progress.progress,
+            sizeUploaded: progress.sizeUploaded,
+            chunksUploaded: progress.chunksUploaded,
+            chunksTotal: progress.chunksTotal,
+            force: progress.progress >= 100,
+          ),
+        );
+      },
+    );
+    await publishUploadProgress(percent: 100, force: true);
+    return result;
+  }
+
+  File? _resolveAgentLogFile() {
+    final candidates = <String>[
+      p.join(Directory.current.path, '.run', 'agent.log'),
+    ];
+
+    try {
+      final script = Platform.script;
+      if (script.scheme == 'file') {
+        final scriptPath = script.toFilePath();
+        final binDir = p.dirname(scriptPath);
+        // bin/ip_ntfy_agent.dart → repo root
+        candidates.add(p.join(p.dirname(binDir), '.run', 'agent.log'));
+        // lib/... → repo root
+        candidates.add(p.normalize(p.join(binDir, '..', '.run', 'agent.log')));
+      }
+    } catch (_) {}
+
+    try {
+      final exe = Platform.resolvedExecutable;
+      if (exe.isNotEmpty) {
+        candidates.add(
+          p.join(p.dirname(exe), '.run', 'agent.log'),
+        );
+      }
+    } catch (_) {}
+
+    for (final path in candidates) {
+      final file = File(path);
+      if (file.existsSync()) return file;
+    }
+    // Prefer canonical cwd path even if missing (for error messages).
+    return File(candidates.first);
+  }
+
+  Future<({String text, int lineCount, bool truncated})> _readLogTail(
+    File file, {
+    required int lines,
+    required int maxBytes,
+  }) async {
+    final length = await file.length();
+    if (length == 0) {
+      return (text: '', lineCount: 0, truncated: false);
+    }
+
+    final readFrom = length > maxBytes * 2 ? length - (maxBytes * 2) : 0;
+    final raf = await file.open();
+    try {
+      await raf.setPosition(readFrom);
+      final bytes = await raf.read(length - readFrom);
+      var text = utf8.decode(bytes, allowMalformed: true);
+      if (readFrom > 0) {
+        final nl = text.indexOf('\n');
+        if (nl >= 0 && nl + 1 < text.length) {
+          text = text.substring(nl + 1);
+        }
+      }
+
+      final allLines = const LineSplitter().convert(text);
+      var selected = allLines;
+      var truncated = readFrom > 0;
+      if (allLines.length > lines) {
+        selected = allLines.sublist(allLines.length - lines);
+        truncated = true;
+      }
+
+      var out = selected.join('\n');
+      final outBytes = utf8.encode(out);
+      if (outBytes.length > maxBytes) {
+        truncated = true;
+        // Keep the tail within maxBytes.
+        var start = outBytes.length - maxBytes;
+        while (start < outBytes.length && (outBytes[start] & 0xc0) == 0x80) {
+          start++;
+        }
+        out = utf8.decode(outBytes.sublist(start), allowMalformed: true);
+        final nl = out.indexOf('\n');
+        if (nl >= 0 && nl + 1 < out.length) {
+          out = out.substring(nl + 1);
+        }
+        selected = const LineSplitter().convert(out);
+      }
+
+      return (
+        text: out,
+        lineCount: selected.length,
+        truncated: truncated,
+      );
+    } finally {
+      await raf.close();
+    }
+  }
+
   /// Resolve [path] to a local file. HTTP(S) URLs are downloaded with
   /// Jenkins host auth; absolute local paths are used as-is.
   Future<({String localPath, Directory? tempDir})> _resolveLocalFile({
@@ -841,6 +1352,23 @@ class Agent {
         'body': null,
         'bodyOmitted': true,
         'omitReason': 'file',
+        'fileName': names.fileName,
+        'folderName': names.folderName,
+        'contentType': ?contentType,
+        'contentLength': contentLength,
+        'request': requestMeta,
+      };
+    }
+
+    if (response.bodyBytes.length > _maxInlineBodyBytes) {
+      return {
+        'type': 'response',
+        'requestId': requestId,
+        'ok': true,
+        'statusCode': response.statusCode,
+        'body': null,
+        'bodyOmitted': true,
+        'omitReason': 'too_large',
         'fileName': names.fileName,
         'folderName': names.folderName,
         'contentType': ?contentType,

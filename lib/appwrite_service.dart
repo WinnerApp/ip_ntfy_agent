@@ -170,9 +170,15 @@ class AppwriteService {
 
   /// Zip resources keep raw [buildId]; APK uses `apk:` prefix so they
   /// do not collide in the same resource collection.
+  /// Log resources use caller ids like `agent:{ts}` / `log:{job}:{n}`,
+  /// or get a `log:` prefix when plain.
   static String storageBuildId(String buildId, {required String kind}) {
     final id = buildId.trim();
     if (kind == 'apk') return 'apk:$id';
+    if (kind == 'log') {
+      if (id.startsWith('log:') || id.startsWith('agent:')) return id;
+      return 'log:$id';
+    }
     return id;
   }
 
@@ -189,7 +195,7 @@ class AppwriteService {
       buildId: buildId,
       tag: tag,
       kind: 'zip',
-      allowedExtension: '.zip',
+      allowedExtensions: const {'.zip'},
       contentType: 'application/zip',
       onProgress: onProgress,
     );
@@ -208,8 +214,26 @@ class AppwriteService {
       buildId: buildId,
       tag: tag,
       kind: 'apk',
-      allowedExtension: '.apk',
+      allowedExtensions: const {'.apk'},
       contentType: 'application/vnd.android.package-archive',
+      onProgress: onProgress,
+    );
+  }
+
+  /// Upload a local `.log` / `.txt` to Storage for temporary client download.
+  Future<ResourceUploadResult> uploadLogResource({
+    required String path,
+    required String buildId,
+    String? tag,
+    void Function(UploadProgress progress)? onProgress,
+  }) {
+    return _uploadResource(
+      path: path,
+      buildId: buildId,
+      tag: tag,
+      kind: 'log',
+      allowedExtensions: const {'.log', '.txt'},
+      contentType: 'text/plain; charset=utf-8',
       onProgress: onProgress,
     );
   }
@@ -218,7 +242,7 @@ class AppwriteService {
     required String path,
     required String buildId,
     required String kind,
-    required String allowedExtension,
+    required Set<String> allowedExtensions,
     required String contentType,
     String? tag,
     void Function(UploadProgress progress)? onProgress,
@@ -236,8 +260,11 @@ class AppwriteService {
     if (!file.existsSync()) {
       throw StateError('File not found: $path');
     }
-    if (p.extension(path).toLowerCase() != allowedExtension) {
-      throw ArgumentError('Only $allowedExtension files are allowed: $path');
+    final ext = p.extension(path).toLowerCase();
+    if (!allowedExtensions.contains(ext)) {
+      throw ArgumentError(
+        'Only ${allowedExtensions.join("/")} files are allowed: $path',
+      );
     }
 
     final storageId = storageBuildId(resolvedBuildId, kind: kind);
@@ -322,6 +349,14 @@ class AppwriteService {
     String? tag,
   }) {
     return _deleteResource(buildId: buildId, tag: tag, kind: 'apk');
+  }
+
+  /// Delete log resource metadata and Storage file keyed by tag + log buildId.
+  Future<ResourceDeleteResult> deleteLogResource({
+    required String buildId,
+    String? tag,
+  }) {
+    return _deleteResource(buildId: buildId, tag: tag, kind: 'log');
   }
 
   Future<ResourceDeleteResult> _deleteResource({
