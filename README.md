@@ -385,6 +385,65 @@ Agent 按与旧发布工具相同的路径，从本机 Jenkins workspace 拉取 
 - `lines`：可选，默认 `500`，上限 `2000`
 - 成功 `body`：`{ text, path, lines, truncated, size }`
 - `truncated: true` 表示只返回了尾部；完整文件请用 `downloadAgentLog`
+- **在线分页查看请优先用下方 `openAgentLogView` / `getLogViewChunk`**
+
+## 在线日志页（临时目录只读快照）
+
+打开会话时 Agent **先把日志复制/下载到临时目录快照**，之后分块只读该快照（源文件继续写入也不影响 offset）。空闲约 30 分钟或 `closeLogView` 时删除临时目录。
+
+### 打开 Agent 日志会话
+
+```json
+{
+  "action": "openAgentLogView",
+  "requestId": "agent-log-view-1",
+  "lines": 10
+}
+```
+
+- `lines`：可选，默认 `10`，上限 `200`；打开时顺带返回**末尾第一块**
+- 成功 `body`：`{ sessionId, text, lineCount, startOffset, endOffset, hasMore, size }`
+
+### 打开 Jenkins 构建日志会话
+
+```json
+{
+  "action": "openBuildLogView",
+  "requestId": "build-log-view-1",
+  "jobName": "build_unity_hot_asset",
+  "buildNumber": "123",
+  "lines": 10
+}
+```
+
+- 先本机拉 `consoleText` 写入临时快照，再返回末尾第一块（字段同上）
+
+### 继续向上分块
+
+```json
+{
+  "action": "getLogViewChunk",
+  "requestId": "log-chunk-2",
+  "sessionId": "lv_...",
+  "lines": 10,
+  "beforeOffset": 12340
+}
+```
+
+- `beforeOffset`：取该字节位置**之前**的更早内容（打开时返回的 `startOffset`）
+- 成功 `body` 字段同打开会话
+
+### 关闭会话
+
+```json
+{
+  "action": "closeLogView",
+  "requestId": "log-close-1",
+  "sessionId": "lv_..."
+}
+```
+
+- 删除临时目录；`body.closed` 表示是否找到并关闭了会话
 
 ## 下载完整 Agent 日志
 

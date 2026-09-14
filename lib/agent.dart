@@ -10,6 +10,7 @@ import 'config.dart';
 import 'feishu_service.dart';
 import 'ip_service.dart';
 import 'jenkins_service.dart';
+import 'log_view_session.dart';
 import 'ntfy_service.dart';
 
 class Agent {
@@ -18,7 +19,8 @@ class Agent {
         jenkins = JenkinsService(),
         ntfy = NtfyService(config),
         feishu = FeishuService(config),
-        _http = http.Client();
+        _http = http.Client(),
+        _logViews = LogViewSessionStore();
 
   final AppConfig config;
   final AppwriteService appwrite;
@@ -26,6 +28,7 @@ class Agent {
   final NtfyService ntfy;
   final FeishuService feishu;
   final http.Client _http;
+  final LogViewSessionStore _logViews;
 
   Timer? _ipTimer;
   Timer? _jenkinsTimer;
@@ -73,6 +76,7 @@ class Agent {
     _running = false;
     _ipTimer?.cancel();
     _jenkinsTimer?.cancel();
+    await _logViews.disposeAll();
     await ntfy.stop();
     jenkins.close();
     feishu.close();
@@ -178,6 +182,22 @@ class Agent {
     }
     if (action == 'getAgentLog') {
       await _handleGetAgentLog(topic, payload);
+      return;
+    }
+    if (action == 'openAgentLogView') {
+      await _handleOpenAgentLogView(topic, payload);
+      return;
+    }
+    if (action == 'openBuildLogView') {
+      await _handleOpenBuildLogView(topic, payload);
+      return;
+    }
+    if (action == 'getLogViewChunk') {
+      await _handleGetLogViewChunk(topic, payload);
+      return;
+    }
+    if (action == 'closeLogView') {
+      await _handleCloseLogView(topic, payload);
       return;
     }
     if (action == 'downloadAgentLog') {
@@ -827,6 +847,283 @@ class Agent {
         {
           'type': 'response',
           'action': 'getAgentLog',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    }
+  }
+
+  Future<void> _handleOpenAgentLogView(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final lines = clampLogViewLines(payload['lines']);
+    try {
+      final logFile = _resolveAgentLogFile();
+      if (logFile == null || !await logFile.exists()) {
+        await ntfy.publish(
+          topic,
+          {
+            'type': 'response',
+            'action': 'openAgentLogView',
+            'requestId': requestId,
+            'ok': false,
+            'error': 'Agent log file not found '
+                '(expected .run/agent.log under repo or cwd)',
+          },
+          tags: const ['response', 'agent-response'],
+        );
+        return;
+      }
+
+      final session = await createSnapshotSession(source: logFile);
+      _logViews.put(session);
+      stdout.writeln(
+        '[agent] openAgentLogView session=${session.sessionId} '
+        'size=${await session.size}',
+      );
+      final chunk = await readLogChunkBefore(
+        session.snapshot,
+        lines: lines,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'openAgentLogView',
+          'requestId': requestId,
+          'ok': true,
+          'body': chunk.toBody(sessionId: session.sessionId),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'openAgentLogView',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    }
+  }
+
+  Future<void> _handleOpenBuildLogView(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final lines = clampLogViewLines(payload['lines']);
+    final jobName = payload['jobName']?.toString().trim() ??
+        payload['job']?.toString().trim();
+    final buildNumber = payload['buildNumber']?.toString().trim() ??
+        payload['buildId']?.toString().trim();
+
+    if (jobName == null ||
+        jobName.isEmpty ||
+        buildNumber == null ||
+        buildNumber.isEmpty) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'openBuildLogView',
+          'requestId': requestId,
+          'ok': false,
+          'error': 'openBuildLogView requires jobName and buildNumber',
+        },
+        tags: const ['response', 'agent-response'],
+      );
+      return;
+    }
+
+    try {
+      final doc = appwrite.cached;
+      if (doc == null) {
+        await ntfy.publish(
+          topic,
+          {
+            'type': 'response',
+            'action': 'openBuildLogView',
+            'requestId': requestId,
+            'ok': false,
+            'error': 'No Jenkins host document loaded',
+          },
+          tags: const ['response', 'agent-response'],
+        );
+        return;
+      }
+
+      final encodedJob = Uri.encodeComponent(jobName);
+      final base = JenkinsService.localJenkinsBase(doc.url);
+      final consoleUrl = '$base/job/$encodedJob/$buildNumber/consoleText';
+      final sessionId = LogViewSessionStore.newSessionId();
+      final dir =
+          await Directory.systemTemp.createTemp('log_view_${sessionId}_');
+      final dest = File(p.join(dir.path, 'snapshot.log'));
+      try {
+        await jenkins.downloadUrl(
+          doc: doc,
+          url: consoleUrl,
+          destPath: dest.path,
+          emptyErrorLabel: 'build log',
+        );
+      } catch (e) {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+        rethrow;
+      }
+
+      final session = LogViewSession(
+        sessionId: sessionId,
+        dir: dir,
+        snapshot: dest,
+      );
+      _logViews.put(session);
+      stdout.writeln(
+        '[agent] openBuildLogView session=$sessionId '
+        'job=$jobName #$buildNumber size=${await session.size}',
+      );
+      final chunk = await readLogChunkBefore(
+        session.snapshot,
+        lines: lines,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'openBuildLogView',
+          'requestId': requestId,
+          'ok': true,
+          'body': chunk.toBody(sessionId: session.sessionId),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'openBuildLogView',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    }
+  }
+
+  Future<void> _handleGetLogViewChunk(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final sessionId = payload['sessionId']?.toString().trim() ?? '';
+    final lines = clampLogViewLines(payload['lines']);
+    final beforeOffset = parseBeforeOffset(payload['beforeOffset']);
+
+    if (sessionId.isEmpty) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'getLogViewChunk',
+          'requestId': requestId,
+          'ok': false,
+          'error': 'getLogViewChunk requires sessionId',
+        },
+        tags: const ['response', 'agent-response'],
+      );
+      return;
+    }
+
+    try {
+      final session = _logViews[sessionId];
+      if (session == null) {
+        await ntfy.publish(
+          topic,
+          {
+            'type': 'response',
+            'action': 'getLogViewChunk',
+            'requestId': requestId,
+            'ok': false,
+            'error': 'Unknown or expired log view session: $sessionId',
+          },
+          tags: const ['response', 'agent-response'],
+        );
+        return;
+      }
+      session.touch();
+      final chunk = await readLogChunkBefore(
+        session.snapshot,
+        lines: lines,
+        beforeOffset: beforeOffset,
+      );
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'getLogViewChunk',
+          'requestId': requestId,
+          'ok': true,
+          'body': chunk.toBody(sessionId: session.sessionId),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'getLogViewChunk',
+          'requestId': requestId,
+          'ok': false,
+          'error': e.toString(),
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    }
+  }
+
+  Future<void> _handleCloseLogView(
+    String topic,
+    Map<String, dynamic> payload,
+  ) async {
+    final requestId = payload['requestId'] ?? payload['id'];
+    final sessionId = payload['sessionId']?.toString().trim() ?? '';
+    try {
+      final closed =
+          sessionId.isEmpty ? false : await _logViews.close(sessionId);
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'closeLogView',
+          'requestId': requestId,
+          'ok': true,
+          'body': {
+            'sessionId': sessionId,
+            'closed': closed,
+          },
+        },
+        tags: const ['response', 'agent-response'],
+      );
+    } catch (e) {
+      await ntfy.publish(
+        topic,
+        {
+          'type': 'response',
+          'action': 'closeLogView',
           'requestId': requestId,
           'ok': false,
           'error': e.toString(),
